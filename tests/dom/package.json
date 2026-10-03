@@ -1,0 +1,1 @@
+{"name":"dom-tests","private":true,"description":"jsdom, used only by tests/test_page_in_browser.py","dependencies":{"jsdom":"^30.1.1"}}

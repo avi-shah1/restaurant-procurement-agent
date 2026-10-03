@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Procurement Agent{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <div class="page-bg" aria-hidden="true"></div>
+  <header class="topbar">
+    <div class="topbar-brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <strong class="brand-name">Procurement Agent</strong>
+        <span class="brand-tag">Restaurant ops · AI-assisted</span>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      {# Chip reflects frontend readiness; backend can later set live / stale labels #}
+      <span class="demo-chip" id="demo-chip">UI ready</span>
+      <button type="button" class="btn btn-ghost" id="btn-refresh" data-action="refresh">Refresh</button>
+      <button type="button" class="btn btn-primary" id="btn-run" data-action="run">Run procurement</button>
+    </div>
+  </header>
+  <main class="shell">{% block content %}{% endblock %}</main>
+  <div class="toast-host" id="toast-host" aria-live="polite"></div>
+  <script src="{{ url_for('static', filename='js/render.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,541 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · Procurement Agent{% endblock %}
+
+{#
+  Expected backend payload shapes (Flask/Jinja or later JSON hydrate):
+
+  kpis: {
+    stock_risks: int,
+    potential_savings: number|null,   # null → show placeholder dash
+    pending_approvals: int
+  }
+
+  inventory: [{
+    sku, name, unit, on_hand, avg_daily, days_left,
+    required_qty,                          # 0 or null when no order needed
+    status: "healthy"|"approaching"|"at_risk"|"critical"
+  }]
+
+  opportunity: null | {
+    id, item, sku, unit,
+    required_qty, required_by,             # ISO date or display string
+    incumbent_supplier, incumbent_cost,
+    recommended_supplier, recommended_cost,
+    savings,                               # vs incumbent
+    pack?, lead_days?, reliability?,
+    rationale,                             # agent rationale text
+    risks: [string],                       # unknowns / caveats
+    sources: [{ label, url }]              # Tavily / market links
+  }
+
+  suppliers: [{
+    name, price, lead_days, reliability, moq,
+    recommended: bool                      # set by backend; UI never assumes who wins
+  }]
+
+  timeline: [{ time, tone: "info"|"agent"|"success"|"error"|"loading", title, detail }]
+
+  ui_phase: "idle"|"forecast_loading"|"procurement_search"|"zoowork_analysing"
+            |"tavily_search"|"recommendation_ready"
+            Controls loading / empty overlays. Backend (or demo JS) sets this.
+#}
+
+{% set kpis = kpis|default({
+  "stock_risks": none,
+  "potential_savings": none,
+  "pending_approvals": none
+}) %}
+
+{% set inventory = inventory|default([]) %}
+{% set opportunity = opportunity|default(none) %}
+{% set suppliers = suppliers|default([]) %}
+{% set timeline = timeline|default([]) %}
+{% set ui_phase = ui_phase|default("idle") %}
+{% set active_scenario = active_scenario|default("default") %}
+
+{% set status_labels = {
+  "healthy": "Healthy",
+  "approaching": "Approaching",
+  "at_risk": "At Risk",
+  "critical": "Critical"
+} %}
+
+{% set phase_labels = {
+  "idle": "Waiting for data",
+  "forecast_loading": "Inventory forecast loading",
+  "procurement_search": "Procurement search running",
+  "zoowork_analysing": "ZooWork agent analysing",
+  "tavily_search": "Tavily market search running",
+  "recommendation_ready": "Recommendation ready"
+} %}
+
+{% set supplier_prices = suppliers|map(attribute='price')|list %}
+{% set supplier_max_price = (supplier_prices|max) if supplier_prices else 1 %}
+
+{% block content %}
+<section class="hero-strip">
+  <div>
+    <h1 class="page-title">Procurement dashboard</h1>
+    <p class="page-sub">Forecast shortages, compare suppliers, approve RFQs — nothing leaves without you.</p>
+  </div>
+  <p class="as-of" data-field="as_of">
+    {# Backend: pass as_of_iso / as_of_label when live data is available #}
+    <span data-bind="as_of_label">Awaiting first run</span>
+  </p>
+</section>
+
+{# Scenario selector — UI only; wire selection to backend later #}
+<section class="scenario-bar" aria-label="Demand scenarios" data-field="scenario">
+  <div class="scenario-bar__head">
+    <h2 class="scenario-bar__title">Scenario</h2>
+    <p class="scenario-bar__hint">Changes the demo inputs. The forecast and the next run both use the selected scenario.</p>
+  </div>
+  <div class="scenario-pills" role="group" aria-label="Select scenario" id="scenario-selector">
+    {% set scenarios = [
+      ("default", "Default"),
+      ("weekend_rush", "Weekend rush"),
+      ("coffee_spike", "Coffee spike"),
+      ("supplier_delay", "Supplier delay"),
+      ("avocado_shortage", "Avocado shortage")
+    ] %}
+    {% for key, label in scenarios %}
+    <button
+      type="button"
+      class="scenario-pill{% if active_scenario == key %} is-active{% endif %}"
+      data-scenario="{{ key }}"
+      data-action="select-scenario"
+      aria-pressed="{{ 'true' if active_scenario == key else 'false' }}"
+    >{{ label }}</button>
+    {% endfor %}
+    <button
+      type="button"
+      class="scenario-pill scenario-pill--reset"
+      data-scenario="reset"
+      data-action="reset-scenario"
+    >Reset</button>
+  </div>
+  <p class="scenario-active" id="scenario-active-label" data-bind="active_scenario_label">
+    Active: <strong data-bind="scenario_name">{{ active_scenario|replace('_', ' ')|title }}</strong>
+  </p>
+</section>
+
+<section class="kpi-grid" aria-label="Key metrics">
+  <article class="kpi-card" data-field="kpis.stock_risks">
+    <p class="kpi-label">Stock Risks</p>
+    <p class="kpi-value" data-bind="kpis.stock_risks">
+      {% if kpis.stock_risks is not none %}{{ kpis.stock_risks }}{% else %}—{% endif %}
+    </p>
+    <p class="kpi-hint">Items approaching, at risk, or critical</p>
+  </article>
+  <article class="kpi-card kpi-card--savings" data-field="kpis.potential_savings">
+    <p class="kpi-label">Potential Savings</p>
+    <p class="kpi-value" data-bind="kpis.potential_savings">
+      {% if kpis.potential_savings is not none %}${{ '%.2f'|format(kpis.potential_savings) }}{% else %}—{% endif %}
+    </p>
+    <p class="kpi-hint">Vs incumbent this cycle</p>
+  </article>
+  <article class="kpi-card kpi-card--pending" data-field="kpis.pending_approvals">
+    <p class="kpi-label">Pending Approvals</p>
+    <p class="kpi-value" data-bind="kpis.pending_approvals">
+      {% if kpis.pending_approvals is not none %}{{ kpis.pending_approvals }}{% else %}—{% endif %}
+    </p>
+    <p class="kpi-hint">RFQs awaiting decision</p>
+  </article>
+</section>
+
+{# Pipeline status strip — reflects ui_phase from backend / demo JS #}
+<section
+  class="pipeline"
+  id="pipeline-status"
+  data-field="ui_phase"
+  data-phase="{{ ui_phase }}"
+  aria-live="polite"
+>
+  <p class="pipeline__label">Run status</p>
+  <ol class="pipeline__steps">
+    <li class="pipeline__step" data-phase-step="forecast_loading">
+      <span class="pipeline__dot"></span>
+      <span>Inventory forecast</span>
+    </li>
+    <li class="pipeline__step" data-phase-step="procurement_search">
+      <span class="pipeline__dot"></span>
+      <span>Procurement search</span>
+    </li>
+    <li class="pipeline__step" data-phase-step="zoowork_analysing">
+      <span class="pipeline__dot"></span>
+      <span>ZooWork analysis</span>
+    </li>
+    <li class="pipeline__step" data-phase-step="tavily_search">
+      <span class="pipeline__dot"></span>
+      <span>Tavily market search</span>
+    </li>
+    <li class="pipeline__step" data-phase-step="recommendation_ready">
+      <span class="pipeline__dot"></span>
+      <span>Recommendation</span>
+    </li>
+  </ol>
+  <p class="pipeline__current" data-bind="ui_phase_label">{{ phase_labels.get(ui_phase, ui_phase) }}</p>
+</section>
+
+<div class="dashboard-grid">
+  <section
+    class="panel panel--wide"
+    aria-labelledby="forecast-heading"
+    data-panel="inventory"
+    data-loading="{{ 'true' if ui_phase == 'forecast_loading' else 'false' }}"
+  >
+    <div class="panel-head">
+      <h2 id="forecast-heading">Inventory forecast</h2>
+      <p class="panel-sub">Projected days of cover from deterministic usage model</p>
+    </div>
+
+    {# Loading state: inventory forecast #}
+    <div class="state-block state-block--loading" data-state="forecast_loading" hidden>
+      <div class="state-spinner" aria-hidden="true"></div>
+      <p class="state-title">Inventory forecast loading</p>
+      <p class="state-copy">Scoring on-hand stock against usage — results will bind into the table below.</p>
+    </div>
+
+    {# Empty state #}
+    <div
+      class="state-block state-block--empty"
+      data-state="inventory_empty"
+      {% if inventory or ui_phase == 'forecast_loading' %}hidden{% endif %}
+    >
+      <div class="state-icon" aria-hidden="true"></div>
+      <p class="state-title">No forecast yet</p>
+      <p class="state-copy">Run procurement to load inventory rows from the backend. Expect fields: sku, name, unit, on_hand, avg_daily, days_left, required_qty, status.</p>
+    </div>
+
+    <div class="table-wrap" data-bind="inventory_table" {% if not inventory %}hidden{% endif %}>
+      <table class="data-table" data-field="inventory">
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>On hand</th>
+            <th>Avg / day</th>
+            <th>Days left</th>
+            <th>Order qty</th>
+            <th>Status</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in inventory %}
+          <tr
+            class="status-row status-row--{{ row.status }}"
+            data-sku="{{ row.sku }}"
+            data-status="{{ row.status }}"
+          >
+            <td>
+              <span class="item-name" data-bind="item.name">{{ row.name }}</span>
+              <span class="item-sku" data-bind="item.sku">{{ row.sku }}</span>
+            </td>
+            <td data-bind="item.on_hand">{{ row.on_hand }} {{ row.unit }}</td>
+            <td data-bind="item.avg_daily">{{ row.avg_daily }} {{ row.unit }}</td>
+            <td>
+              <span class="days-pill days-pill--{{ row.status }}" data-bind="item.days_left">
+                {{ '%.1f'|format(row.days_left) }}d
+              </span>
+            </td>
+            <td data-bind="item.required_qty">
+              {% if row.required_qty %}{{ row.required_qty }} {{ row.unit }}{% else %}—{% endif %}
+            </td>
+            <td>
+              <span class="badge badge--{{ row.status }}" data-bind="item.status">
+                {{ status_labels.get(row.status, row.status) }}
+              </span>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <ul class="legend" aria-label="Status legend">
+      <li><span class="badge badge--healthy">Healthy</span> Cover OK</li>
+      <li><span class="badge badge--approaching">Approaching</span> Tight soon</li>
+      <li><span class="badge badge--at_risk">At Risk</span> Order soon</li>
+      <li><span class="badge badge--critical">Critical</span> Order now</li>
+    </ul>
+  </section>
+
+  <aside class="side-stack">
+    {#
+      Recommendation card — fully generic.
+      Populate via Jinja `opportunity` or later hydrate data-* / [data-bind] nodes from API JSON.
+      Never hard-code which supplier is recommended in markup; use opportunity.recommended_supplier
+      and suppliers[].recommended from the backend.
+    #}
+    <section
+      class="panel opportunity"
+      aria-labelledby="opp-heading"
+      data-field="opportunity"
+      data-panel="recommendation"
+      data-run-id="{{ opportunity.id if opportunity else '' }}"
+      data-item="{{ opportunity.item if opportunity else '' }}"
+      data-required-qty="{{ opportunity.required_qty if opportunity else '' }}"
+      data-required-by="{{ opportunity.required_by if opportunity else '' }}"
+      data-incumbent-supplier="{{ opportunity.incumbent_supplier if opportunity else '' }}"
+      data-incumbent-cost="{{ opportunity.incumbent_cost if opportunity else '' }}"
+      data-recommended-supplier="{{ opportunity.recommended_supplier if opportunity else '' }}"
+      data-recommended-cost="{{ opportunity.recommended_cost if opportunity else '' }}"
+      data-savings="{{ opportunity.savings if opportunity else '' }}"
+      data-phase="{{ ui_phase }}"
+    >
+      <div class="panel-head">
+        <h2 id="opp-heading">Procurement recommendation</h2>
+        <span
+          class="badge badge--critical"
+          data-bind="recommendation.status_badge"
+          {% if not opportunity or ui_phase != 'recommendation_ready' %}hidden{% endif %}
+        >Needs approval</span>
+      </div>
+
+      {# Loading: procurement search #}
+      <div class="state-block state-block--loading" data-state="procurement_search" hidden>
+        <div class="state-spinner" aria-hidden="true"></div>
+        <p class="state-title">Procurement search running</p>
+        <p class="state-copy">Gathering supplier offers for the shortage item…</p>
+      </div>
+
+      {# Loading: ZooWork #}
+      <div class="state-block state-block--loading" data-state="zoowork_analysing" hidden>
+        <div class="state-spinner" aria-hidden="true"></div>
+        <p class="state-title">ZooWork agent analysing</p>
+        <p class="state-copy">Comparing lead time, reliability, and normalised unit cost…</p>
+      </div>
+
+      {# Loading: Tavily #}
+      <div class="state-block state-block--loading" data-state="tavily_search" hidden>
+        <div class="state-spinner" aria-hidden="true"></div>
+        <p class="state-title">Tavily market search running</p>
+        <p class="state-copy">Pulling live market listings to cross-check quotes…</p>
+      </div>
+
+      {# Empty / idle before recommendation #}
+      <div
+        class="state-block state-block--empty"
+        data-state="recommendation_empty"
+        {% if opportunity and ui_phase == 'recommendation_ready' %}hidden{% endif %}
+      >
+        <div class="state-icon state-icon--recommend" aria-hidden="true"></div>
+        <p class="state-title">No recommendation yet</p>
+        <p class="state-copy">When the agent finishes, this card binds item, quantities, incumbent vs recommended suppliers, savings, rationale, risks, and source links.</p>
+      </div>
+
+      {# Ready state #}
+      <div
+        class="opportunity-body"
+        data-state="recommendation_ready"
+        data-bind="opportunity"
+        {% if not opportunity or ui_phase != 'recommendation_ready' %}hidden{% endif %}
+      >
+        {% if opportunity %}
+        <p class="opp-item">
+          <span class="opp-sku" data-bind="opportunity.sku">{{ opportunity.sku }}</span>
+          <span data-bind="opportunity.item">{{ opportunity.item }}</span>
+        </p>
+
+        <dl class="opp-meta">
+          <div>
+            <dt>Required qty</dt>
+            <dd data-bind="opportunity.required_qty">
+              {{ opportunity.required_qty }} {{ opportunity.unit }}
+            </dd>
+          </div>
+          <div>
+            <dt>Required by</dt>
+            <dd data-bind="opportunity.required_by">{{ opportunity.required_by }}</dd>
+          </div>
+          <div>
+            <dt>Incumbent</dt>
+            <dd>
+              <span data-bind="opportunity.incumbent_supplier">{{ opportunity.incumbent_supplier }}</span>
+              <span class="meta-cost" data-bind="opportunity.incumbent_cost">
+                · ${{ '%.2f'|format(opportunity.incumbent_cost) }}
+              </span>
+            </dd>
+          </div>
+          <div>
+            <dt>Recommended</dt>
+            <dd>
+              <span data-bind="opportunity.recommended_supplier">{{ opportunity.recommended_supplier }}</span>
+              <span class="meta-cost" data-bind="opportunity.recommended_cost">
+                · ${{ '%.2f'|format(opportunity.recommended_cost) }}
+              </span>
+            </dd>
+          </div>
+          <div>
+            <dt>Savings</dt>
+            <dd>
+              <span class="save-chip" data-bind="opportunity.savings">
+                Save ${{ '%.2f'|format(opportunity.savings) }}
+              </span>
+              {% if opportunity.pack %}
+              <span class="meta-aside" data-bind="opportunity.pack">{{ opportunity.pack }}</span>
+              {% endif %}
+            </dd>
+          </div>
+          {% if opportunity.lead_days is defined and opportunity.reliability is defined %}
+          <div>
+            <dt>Lead · reliability</dt>
+            <dd data-bind="opportunity.lead_reliability">
+              {{ opportunity.lead_days }} days · {{ '%.0f'|format(opportunity.reliability * 100) }}%
+            </dd>
+          </div>
+          {% endif %}
+        </dl>
+
+        <blockquote class="rationale" data-field="opportunity.rationale">
+          <p class="rationale__label">Agent rationale</p>
+          <p data-bind="opportunity.rationale">{{ opportunity.rationale }}</p>
+        </blockquote>
+
+        <div class="risks" data-field="opportunity.risks">
+          <p class="risks__label">Risks / unknowns</p>
+          {% if opportunity.risks %}
+          <ul class="risks__list" data-bind="opportunity.risks">
+            {% for risk in opportunity.risks %}
+            <li>{{ risk }}</li>
+            {% endfor %}
+          </ul>
+          {% else %}
+          <p class="risks__empty" data-bind="opportunity.risks_empty">None reported</p>
+          {% endif %}
+        </div>
+
+        <div class="sources" data-field="opportunity.sources">
+          <p class="sources__label">Source links</p>
+          {% if opportunity.sources %}
+          <ul class="sources__list" data-bind="opportunity.sources">
+            {% for src in opportunity.sources %}
+            <li>
+              <a href="{{ src.url }}" target="_blank" rel="noopener noreferrer">{{ src.label }}</a>
+            </li>
+            {% endfor %}
+          </ul>
+          {% else %}
+          <p class="sources__empty" data-bind="opportunity.sources_empty">No sources attached yet</p>
+          {% endif %}
+        </div>
+
+        <div class="opp-actions">
+          <button
+            type="button"
+            class="btn btn-primary"
+            id="btn-approve"
+            data-action="approve"
+            data-run-id="{{ opportunity.id }}"
+          >Approve RFQ</button>
+          <button
+            type="button"
+            class="btn btn-danger"
+            id="btn-reject"
+            data-action="reject"
+            data-run-id="{{ opportunity.id }}"
+          >Reject</button>
+        </div>
+        {% endif %}
+      </div>
+    </section>
+
+    <section
+      class="panel"
+      aria-labelledby="supplier-heading"
+      data-panel="suppliers"
+      data-loading="{{ 'true' if ui_phase in ['procurement_search', 'zoowork_analysing', 'tavily_search'] else 'false' }}"
+    >
+      <div class="panel-head">
+        <h2 id="supplier-heading">Supplier comparison</h2>
+        <p class="panel-sub" data-bind="suppliers.subtitle">
+          {# Backend should set unit + sku for the active shortage item #}
+          {% if opportunity %}
+          Normalised $/{{ opportunity.unit }} for {{ opportunity.sku }}
+          {% else %}
+          Offers appear when a shortage item is under review
+          {% endif %}
+        </p>
+      </div>
+
+      <div
+        class="state-block state-block--loading"
+        data-state="suppliers_loading"
+        {% if ui_phase not in ['procurement_search', 'zoowork_analysing', 'tavily_search'] %}hidden{% endif %}
+      >
+        <div class="state-spinner" aria-hidden="true"></div>
+        <p class="state-title">Comparing suppliers</p>
+        <p class="state-copy">Rows bind from backend <code>suppliers[]</code> — recommendation flag is never assumed in the UI.</p>
+      </div>
+
+      <div
+        class="state-block state-block--empty"
+        data-state="suppliers_empty"
+        {% if suppliers or ui_phase in ['procurement_search', 'zoowork_analysing', 'tavily_search'] %}hidden{% endif %}
+      >
+        <div class="state-icon state-icon--suppliers" aria-hidden="true"></div>
+        <p class="state-title">No supplier offers yet</p>
+        <p class="state-copy">Expect name, price, lead_days, reliability, moq, and a boolean <code>recommended</code> from the agent.</p>
+      </div>
+
+      <div class="supplier-list" data-field="suppliers" {% if not suppliers %}hidden{% endif %}>
+        {% for s in suppliers %}
+        {# Highlight only when backend marks recommended=true — no named-supplier assumption #}
+        <article
+          class="supplier-row{% if s.recommended %} supplier-row--best{% endif %}"
+          data-supplier-name="{{ s.name }}"
+          data-recommended="{{ 'true' if s.recommended else 'false' }}"
+        >
+          <div class="supplier-main">
+            <p class="supplier-name">
+              <span data-bind="supplier.name">{{ s.name }}</span>
+              {% if s.recommended %}<span class="best-tag">Recommended</span>{% endif %}
+            </p>
+            <p class="supplier-meta">
+              {{ s.lead_days }}d lead · {{ '%.0f'|format(s.reliability * 100) }}% reliable · MOQ {{ s.moq }}
+            </p>
+          </div>
+          <p class="supplier-price">
+            $<span data-bind="supplier.price">{{ '%.2f'|format(s.price) }}</span>
+            <span>{% if opportunity %}/{{ opportunity.unit }}{% else %}/unit{% endif %}</span>
+          </p>
+          <div class="price-bar" aria-hidden="true">
+            {% set bar_pct = ((s.price / supplier_max_price * 100)|round) if supplier_max_price else 0 %}
+            <span style="width: {{ bar_pct }}%"></span>
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+  </aside>
+
+  <section class="panel panel--full" aria-labelledby="timeline-heading" data-panel="timeline">
+    <div class="panel-head">
+      <h2 id="timeline-heading">Agent activity</h2>
+      <p class="panel-sub">Live trail of forecast → tools → RFQ draft</p>
+    </div>
+
+    <div
+      class="state-block state-block--empty"
+      data-state="timeline_empty"
+      {% if timeline %}hidden{% endif %}
+    >
+      <div class="state-icon state-icon--timeline" aria-hidden="true"></div>
+      <p class="state-title">Quiet for now</p>
+      <p class="state-copy">Agent steps (forecast, ZooWork tools, Tavily search, RFQ draft) will appear here as the run progresses.</p>
+    </div>
+
+    <ol class="timeline" data-field="timeline" {% if not timeline %}hidden{% endif %}>
+      {% for event in timeline %}
+      <li class="timeline-item timeline-item--{{ event.tone }}">
+        <time class="timeline-time">{{ event.time }}</time>
+        <div class="timeline-body">
+          <p class="timeline-title">{{ event.title }}</p>
+          <p class="timeline-detail">{{ event.detail }}</p>
+        </div>
+      </li>
+      {% endfor %}
+    </ol>
+  </section>
+</div>
+{% endblock %}
