@@ -1,7 +1,8 @@
+import hmac
 import os
 from datetime import date
 
-from flask import Flask, abort, current_app, jsonify, render_template, request
+from flask import Flask, Response, abort, current_app, jsonify, render_template, request
 
 from .config import env_status
 from .data import get_base_repo, get_repo
@@ -62,6 +63,18 @@ def create_app(run_sync: bool = False) -> Flask:
     app = Flask(__name__)
     app.config["SECRET_KEY"] = os.environ.get("FLASK_SECRET_KEY", "dev-only")
     app.config["RUN_SYNC"] = run_sync
+
+    gate = os.environ.get("DEMO_PASSWORD")
+    if gate:  # a public deployment: everything except /health asks for a shared password (any username)
+        @app.before_request
+        def require_demo_password():
+            if request.path == "/health":
+                return None
+            auth = request.authorization
+            given = getattr(auth, "password", None)
+            if given is not None and hmac.compare_digest(given.encode(), gate.encode()):
+                return None
+            return Response("Password required.", 401, {"WWW-Authenticate": 'Basic realm="Procurement demo"'})
 
     @app.get("/")
     def index():

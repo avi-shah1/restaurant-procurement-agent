@@ -8,7 +8,7 @@ See `ARCHITECTURE.md` for the design.
 cd C:\Users\avido\Projects\restaurant-procurement-agent
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r requirements-dev.txt    # runtime packages + pytest
 copy .env.example .env      # then fill in the keys
 python run.py
 ```
@@ -65,3 +65,19 @@ With `FLASK_DEBUG=1`, preview what the forecast engine concludes without changin
 `/debug/forecast?scenario=supplier_delay&today=2026-10-02`.
 Switch the active scenario: `POST /api/scenarios/active` with `{"key": "coffee_spike"}`;
 restore the original with `POST /api/scenarios/reset`.
+
+
+## Deploying to Vercel
+
+`pyproject.toml` points Vercel at `run:app`. On Vercel the app runs in **demo mode** by default and needs no keys.
+
+1. Import the GitHub repo in Vercel (or `npx vercel` after `npx vercel login`).
+2. Set environment variables (Project Settings, Environment Variables):
+   - `DEMO_PASSWORD` : **set this.** The site is public; without it anyone with the URL can click Run, Approve and Send.
+   - `AGENT_MODE=mock` and `MARKET_SEARCH_PROVIDER=mock` : the free, deterministic demo. Do **not** add
+     `ZOOWORK_API_KEY` / `TAVILY_API_KEY` to a public site without the password: every Run click would spend real money.
+   - `DEMO_MODE=1`.
+3. Be aware: Vercel runs each request in a short-lived function. Runs finish inside the request (`run_sync`), and the
+   demo database lives in the instance's temp folder. It is **not shared between instances and disappears on a cold
+   start**, so a run can occasionally vanish between clicks. For anything that must persist, use Supabase
+   (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `DEMO_MODE=0`, and run `supabase/schema.sql` first).

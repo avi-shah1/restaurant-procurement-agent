@@ -3,4 +3,3 @@ python-dotenv>=1.0
 supabase>=2.0
 tavily-python>=0.5
 zoowork>=0.5.2
-pytest>=8.0
