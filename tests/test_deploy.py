@@ -25,15 +25,35 @@ def test_pyproject_points_vercel_at_an_app_that_exists():
     assert type(getattr(entry, attr)).__name__ == "Flask"
 
 
+def test_vercel_can_find_the_app_by_its_default_file_name():
+    """The deploy failed with "No Flask entrypoint found in default locations ... run.py". Vercel only accepts a few
+    file names, so the app must be created, as a plain `app = ...` assignment, in one of them."""
+    import ast
+    vercel_defaults = ["app.py", "index.py", "server.py", "main.py", "wsgi.py", "asgi.py"]
+    found = [n for n in vercel_defaults if (ROOT / n).exists()]
+    assert found == ["index.py"], found            # exactly one, and never app.py (it would clash with the app/ package)
+    tree = ast.parse((ROOT / "index.py").read_text(encoding="utf-8"))
+    assigned = [t.id for node in tree.body if isinstance(node, ast.Assign) for t in node.targets if isinstance(t, ast.Name)]
+    assert "app" in assigned
+    import index
+    assert type(index.app).__name__ == "Flask"
+
+
+def test_run_py_and_the_pyproject_entrypoint_are_the_same_app():
+    import index
+    import run
+    assert run.app is index.app                     # one app, created in one place
+
+
 def test_on_vercel_runs_finish_inside_the_request(monkeypatch):
     """A background thread is frozen when a serverless response is sent, so Vercel must run jobs inline."""
-    import run
+    import index
     monkeypatch.delenv("VERCEL", raising=False)
-    assert importlib.reload(run).app.config["RUN_SYNC"] is False        # locally: background thread
+    assert importlib.reload(index).app.config["RUN_SYNC"] is False      # locally: background thread
     monkeypatch.setenv("VERCEL", "1")
-    assert importlib.reload(run).app.config["RUN_SYNC"] is True         # on Vercel: inline
+    assert importlib.reload(index).app.config["RUN_SYNC"] is True       # on Vercel: inline
     monkeypatch.delenv("VERCEL")
-    importlib.reload(run)
+    importlib.reload(index)
 
 
 def test_a_whole_run_works_inline_the_way_vercel_will_run_it():

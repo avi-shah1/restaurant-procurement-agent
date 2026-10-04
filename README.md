@@ -69,7 +69,7 @@ restore the original with `POST /api/scenarios/reset`.
 
 ## Deploying to Vercel
 
-`pyproject.toml` points Vercel at `run:app`. On Vercel the app runs in **demo mode** by default and needs no keys.
+The app is created in `index.py`, a file name Vercel recognises (it rejected `run.py`). `run.py` just re-exports it for local use. On Vercel the app runs in **demo mode** by default and needs no keys.
 
 1. Import the GitHub repo in Vercel (or `npx vercel` after `npx vercel login`).
 2. Set environment variables (Project Settings, Environment Variables):
