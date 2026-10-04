@@ -1,2 +1,4 @@
 [tool.vercel]
-entrypoint = "run:app"
+# Must be a default-named module Vercel accepts (index/app/main/server/wsgi).
+# "run:app" made Vercel ignore index.py and fail with the run.py entrypoint error.
+entrypoint = "index:app"

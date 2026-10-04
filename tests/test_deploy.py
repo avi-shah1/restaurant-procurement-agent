@@ -20,7 +20,7 @@ def basic(password: str, user: str = "anyone") -> dict:
 def test_pyproject_points_vercel_at_an_app_that_exists():
     config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     module, _, attr = config["tool"]["vercel"]["entrypoint"].partition(":")
-    assert (module, attr) == ("run", "app")
+    assert (module, attr) == ("index", "app")
     entry = importlib.import_module(module)
     assert type(getattr(entry, attr)).__name__ == "Flask"
 
