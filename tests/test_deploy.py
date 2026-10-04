@@ -17,12 +17,15 @@ def basic(password: str, user: str = "anyone") -> dict:
 
 
 # ---------- the Vercel entrypoint ----------
-def test_pyproject_points_vercel_at_an_app_that_exists():
-    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    module, _, attr = config["tool"]["vercel"]["entrypoint"].partition(":")
-    assert (module, attr) == ("index", "app")
-    entry = importlib.import_module(module)
-    assert type(getattr(entry, attr)).__name__ == "Flask"
+def test_there_is_no_half_configured_pyproject():
+    """Vercel installs a Python app's packages from pyproject.toml whenever one exists. A pyproject.toml with no
+    [project] table made every deploy fail ("uv lock ... No `project` table found"). Either there is none (Vercel
+    then uses requirements.txt), or it is a complete project that lists the dependencies itself."""
+    path = ROOT / "pyproject.toml"
+    if not path.exists():
+        return
+    project = tomllib.loads(path.read_text(encoding="utf-8")).get("project")
+    assert project is not None and project.get("dependencies"), "pyproject.toml must be complete, or deleted"
 
 
 def test_vercel_can_find_the_app_by_its_default_file_name():
@@ -39,7 +42,7 @@ def test_vercel_can_find_the_app_by_its_default_file_name():
     assert type(index.app).__name__ == "Flask"
 
 
-def test_run_py_and_the_pyproject_entrypoint_are_the_same_app():
+def test_run_py_and_index_py_are_the_same_app():
     import index
     import run
     assert run.app is index.app                     # one app, created in one place
@@ -148,7 +151,8 @@ def test_the_upload_excludes_secrets_tests_and_local_data():
 SOURCE_FILES = [p for folder in ("app", "tests", "scripts", "supabase") for p in (ROOT / folder).rglob("*")
                 if p.is_file() and "node_modules" not in p.parts and "__pycache__" not in p.parts
                 and p.suffix in {".py", ".js", ".html", ".css", ".sql", ".json", ".md", ".txt"}]
-SOURCE_FILES += [ROOT / n for n in ("README.md", "ARCHITECTURE.md", ".env.example", "pyproject.toml", "requirements.txt")]
+SOURCE_FILES += [ROOT / n for n in ("README.md", "ARCHITECTURE.md", ".env.example", "pyproject.toml", "requirements.txt")
+                 if (ROOT / n).exists()]
 
 
 def test_no_secret_shaped_strings_are_in_the_source():
