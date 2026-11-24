@@ -1,6 +1,6 @@
 .venv/
-tests/
-data/
+/tests/
+/data/
 node_modules/
 .pytest_cache/
 __pycache__/
