@@ -1,3 +1,6 @@
+import datetime as _dt
+import importlib
+
 import pytest
 import tavily
 
@@ -12,6 +15,29 @@ from app.demand_events import reset_events
 def real_api_attempts():
     """Every attempt a test made to reach a REAL billable API (Tavily / ZooWork). Always empty if tests behave."""
     return []
+
+
+# The demo data and forecast depend on the day of the week, so tests run on a fixed "today" (a Saturday, the day
+# they were written). Without this the suite passes or fails depending on which day it is run.
+FROZEN_TODAY = _dt.date(2026, 10, 3)
+_DATE_MODULES = ("app.data.demo_data", "app.data.local_repo", "app.data.scenario_repo", "app.data.summary",
+                 "app.demand_events", "app.forecast", "app.procurement.options", "app.procurement.requirement",
+                 "app.procurement.rfq", "app")
+
+
+class FrozenDate(_dt.date):
+    @classmethod
+    def today(cls):
+        return FROZEN_TODAY
+
+
+@pytest.fixture(autouse=True)
+def _frozen_today(monkeypatch):
+    for name in _DATE_MODULES:
+        module = importlib.import_module(name)
+        if getattr(module, "date", None) is _dt.date:
+            monkeypatch.setattr(module, "date", FrozenDate)
+    yield
 
 
 @pytest.fixture(autouse=True)
